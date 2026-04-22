@@ -1,0 +1,457 @@
+use bevy::{input::{common_conditions::input_just_pressed, mouse::AccumulatedMouseMotion}, prelude::*, window::{CursorOptions, PrimaryWindow, WindowFocused}};
+use rand::{SeedableRng, seq::IndexedRandom};
+fn main() {
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins);
+    app.add_systems(Startup, (spawn_camera, spawn_map));
+    app.insert_resource(Time::<Fixed>::from_hz(60.));
+    app.add_systems(FixedUpdate,(
+        apply_velocity,
+        apply_gravity.before(apply_velocity),
+        bounce.after(apply_velocity),
+        apply_player_velocity,
+        apply_player_gravity.before(apply_player_velocity)
+    ));
+    app.add_systems(Update, 
+        (player_look,
+            player_move.after(player_look),
+            focus_event,
+            toggle_grab.run_if(input_just_pressed(KeyCode::Escape)),
+            spawn_ball,
+            shoot_ball.before(spawn_ball).before(focus_event),
+            spawn_menu,
+            spawn_hud,
+            update_power_bar));
+    app.add_observer(apply_grab);
+    app.add_message::<BallSpawn>();
+    app.init_resource::<BallData>();
+    app.insert_resource(Power {
+        charging: false,
+        current: 0.
+    });
+    app.run();
+}
+
+#[derive(Component)]
+struct Player {
+    speed: f32,
+    creative: bool,
+    velocity: Vec3,
+    sneak: bool
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Player { speed: 50., creative: false, velocity: Vec3::Y * 20., sneak: false }
+    }
+}
+
+#[derive(Event, Deref)]
+struct GrabEvent(bool);
+
+#[derive(Message)]
+struct BallSpawn {
+    position: Vec3,
+    velocity: Vec3,
+    power: f32
+}
+
+#[derive(Resource)]
+struct BallData {
+    mesh: Handle<Mesh>,
+    materials: Vec<Handle<StandardMaterial>>,
+    rng: std::sync::Mutex<rand::rngs::StdRng>
+}
+
+impl BallData {
+    fn mesh(&self) -> Handle<Mesh> {
+        self.mesh.clone()
+    }
+    fn material(&self) -> Handle<StandardMaterial> {
+        let mut rng = self.rng.lock().unwrap();
+        self.materials.choose(&mut *rng).unwrap().clone()
+    }
+}
+
+impl FromWorld for BallData {
+    fn from_world(world: &mut World) -> Self {
+        let mesh = world.resource_mut::<Assets<Mesh>>().add(Sphere::new(1.));
+        let mut materials = Vec::new();
+        let mut mat_assets = world.resource_mut::<Assets<StandardMaterial>>();
+        for i in 0..36 {
+            let color = Color::hsl((i * 10) as f32, 1., 0.5);
+            materials.push(mat_assets.add(StandardMaterial {
+                base_color: color,
+                ..Default::default()
+            }));
+        }
+        let seed = *b"tunicIsBetterThanYouHEHEHEHAPTDR";
+        BallData { mesh, materials, rng: std::sync::Mutex::new(rand::rngs::StdRng::from_seed(seed)) }
+    }
+}
+
+#[derive(Component, Deref, DerefMut)]
+struct Velocity(Vec3);
+
+#[derive(Component, Deref, DerefMut)]
+struct PlayerVelocity(Vec3);
+
+#[derive(Resource)]
+struct Power {
+    charging: bool,
+    current: f32
+}
+
+#[derive(Component)]
+struct PowerBar {
+    min: f32,
+    max: f32
+}
+
+const NOT_CHARGING: Color = Color::linear_rgb(0.2, 0.2, 0.2);
+const MIN_FILL: f32 = 12.5 / 10.;
+const EMPTY_SPACE: f32 = 12.5 - MIN_FILL;
+
+fn spawn_camera(mut commands: Commands) {
+    commands.spawn((
+        Transform::from_translation(Vec3::new(0., 5., 0.)),
+        Camera3d::default(),
+        Player::default(),
+        PlayerVelocity(Vec3::ZERO)
+    ));
+}
+
+fn spawn_map(
+    mut commands: Commands,
+    ball_data: Res<BallData>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.spawn(DirectionalLight::default());
+    for h in 0..ball_data.materials.len() {
+        commands.spawn((
+            Transform::from_translation(Vec3::new((-8. + h as f32) * 2., 5., -30.)),
+            Mesh3d(ball_data.mesh()),
+            MeshMaterial3d(ball_data.materials[h].clone()),
+        ));
+    }
+    commands.spawn((
+        Transform::from_translation(Vec3::new(0., -2., 0.)),
+        Mesh3d(meshes.add(Cuboid::new(500., 1., 500.))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(1., 0., 0.),
+            ..Default::default()
+        }))
+    ));
+}
+
+#[derive(Component)]
+struct MenuUi;
+
+#[derive(Component)]
+struct PlayerHud;
+
+
+fn spawn_menu(
+    mut commands: Commands,
+    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
+    query: Query<Entity, With<MenuUi>>
+) {
+    if cursor.visible && query.is_empty() {
+        commands.spawn((
+            MenuUi,
+            Node {
+            position_type: PositionType::Absolute,
+            width: Val::Vw(30.),
+            height: Val::Vh(90.),
+            bottom: Val::Vh(5.),
+            left: Val::Vw(1.5),
+            top: Val::Vh(5.),
+            border_radius: BorderRadius::all(Val::VMax(1.)),
+            ..Default::default()
+            },
+            BackgroundColor(Color::linear_rgba(0.5, 0.5, 0.5, 0.5)),
+        )).with_child((
+            Text::new("Salut !"),
+            TextFont {
+                font_size: 30.,
+                ..Default::default()
+            },
+            TextColor(Color::linear_rgba(0.5, 0., 0., 1.))
+        ));
+    } else if !cursor.visible && !query.is_empty() {
+        for entity in &query {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn spawn_hud(
+    mut commands: Commands,
+    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
+    query: Query<Entity, With<PlayerHud>>
+) {
+    if !cursor.visible && query.is_empty() {
+        commands.spawn((
+            PlayerHud,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Vw(12.5),
+                height: Val::Vh(2.5),
+                bottom: Val::Vh(5.),
+                left: Val::Vw(86.),
+                border_radius: BorderRadius::all(Val::VMax(1.)),
+                ..Default::default()
+            },
+            BackgroundColor(Color::linear_rgb(0.5, 0.5, 0.5)),
+        )).with_child((
+            Node {
+                position_type: PositionType::Absolute,
+                min_width: Val::Vw(MIN_FILL),
+                height: Val::Percent(100.),
+                border_radius: BorderRadius::all(Val::VMax(1.)),
+                ..Default::default()
+            },
+            BackgroundColor(NOT_CHARGING),
+            PowerBar { min: 1., max: 2.}
+        ));
+    } else if cursor.visible && !query.is_empty() {
+        for entity in &query {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn update_power_bar(
+    mut bars: Query<(&mut Node, &PowerBar, &mut BackgroundColor)>,
+    power: Res<Power>
+) {
+    for (mut bar, config, mut bg) in &mut bars {
+        if !power.charging {
+            bg.0 = NOT_CHARGING;
+            bar.width = Val::Vw(MIN_FILL);
+        } else {
+            let percent = (power.current - config.min) / (config.max - config.min);
+            bg.0 = Color::linear_rgb(1. - percent, percent, 0.);
+            bar.width = Val::Vw(MIN_FILL + percent * EMPTY_SPACE);
+        }
+    }
+}
+
+fn player_look(
+    mut player: Single<&mut Transform, With<Player>>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    time: Res<Time>,
+    window: Single<&Window, With<PrimaryWindow>>
+) {
+    if !window.focused { return;}
+    let dt = time.delta_secs();
+    let sensitivity = 100. / window.width().min(window.height());
+    use EulerRot::YXZ;
+    let (mut yaw, mut pitch, _) = player.rotation.to_euler(YXZ);
+    pitch -= mouse_motion.delta.y * dt * sensitivity;
+    yaw -= mouse_motion.delta.x * dt * sensitivity;
+    pitch = pitch.clamp(-1.57, 1.57);
+    player.rotation = Quat::from_euler(YXZ, yaw, pitch, 0.);
+}
+
+fn apply_grab(
+    grab: On<GrabEvent>,
+    mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>
+) {
+    use bevy::window::CursorGrabMode;
+    if **grab {
+        cursor.visible = false;
+        cursor.grab_mode = CursorGrabMode::Locked;
+    } else {
+        cursor.visible = true;
+        cursor.grab_mode = CursorGrabMode::None;
+    }
+}
+
+fn focus_event(
+    mut events: MessageReader<WindowFocused>,
+    mut commands: Commands
+) {
+    if let Some(event) = events.read().last() {
+        commands.trigger(GrabEvent(event.focused));
+    }
+}
+
+fn toggle_grab(
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
+    mut commands: Commands
+) {
+    window.focused = !window.focused;
+    commands.trigger(GrabEvent(window.focused));
+}
+
+fn player_move(
+    player: Single<(&mut Transform, &mut Player, &mut PlayerVelocity), With<Player>>,
+    input: Res<ButtonInput<KeyCode>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>
+) {
+    if cursor.visible {
+        return;
+    }
+    let speed_multiplier = if input.pressed(KeyCode::ShiftLeft) { 3. } else { 1. };
+    let mut delta = Vec3::ZERO;
+    let (mut transform, mut player_data, mut velocity) = player.into_inner();
+    if input.pressed(KeyCode::KeyA) {
+        delta.x -= 1.;
+    } 
+    if input.pressed(KeyCode::KeyD) {
+        delta.x += 1.;
+    }
+    if input.pressed(KeyCode::KeyW) {
+        delta.z += 1.;
+    } 
+    if input.pressed(KeyCode::KeyS) {
+        delta.z -= 1.;
+    }
+    let forward = transform.forward().as_vec3() * delta.z;
+    let right = transform.right().as_vec3() * delta.x;
+    let mut to_move = forward + right;
+    to_move.y = 0.;
+    // enable/disable this to fly/unfly
+    if player_data.creative && input.pressed(KeyCode::Space) {
+        to_move.y += 1.;
+    } else if input.pressed(KeyCode::Space) && transform.translation.y <= 5. {
+        velocity.y = player_data.velocity.y;
+        to_move.y += 1.;
+    }
+    if player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) {
+        to_move.y -= 1.;
+    }
+    if !player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) {
+        player_data.sneak = true;
+    } else {
+        player_data.sneak = false;
+    }
+    if input.just_pressed(KeyCode::KeyQ) {
+        player_data.creative = !player_data.creative;
+    }
+    to_move = to_move.normalize_or_zero();
+    transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
+    if !player_data.creative && player_data.sneak && transform.translation.y > 4. {
+        transform.translation.y -= 1.;
+        player_data.speed *= 0.25;
+    } else if !player_data.creative && !player_data.sneak && transform.translation.y <= 4. {
+        transform.translation.y += 1.;
+        player_data.speed *= 4.;
+    }
+}
+
+fn spawn_ball(
+    mut events: MessageReader<BallSpawn>,
+    mut commands: Commands,
+    ball_data: Res<BallData>
+) {
+    for spawn in events.read() {
+        commands.spawn((
+            Transform::from_translation(spawn.position),
+            Mesh3d(ball_data.mesh()),
+            MeshMaterial3d(ball_data.material()),
+            Velocity(spawn.velocity * spawn.power * 5.)
+        ));
+    }
+
+}
+
+fn shoot_ball(
+    mouse_inputs: Res<ButtonInput<MouseButton>>,
+    player: Single<(&mut Transform, &mut Player), With<Player>>,
+    mut spawner: MessageWriter<BallSpawn>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    mut power: ResMut<Power>,
+    time: Res<Time>
+) {
+    if cursor.visible {
+        return;
+    }
+    if power.charging {
+        if mouse_inputs.just_released(MouseButton::Left) {
+            spawner.write(BallSpawn {
+                position: player.0.translation,
+                velocity: player.0.forward().as_vec3() * 2.5,
+                power: (power.current * 2.).exp()
+            });
+        }
+        if mouse_inputs.pressed(MouseButton::Left) {
+            power.current += time.delta_secs();
+            power.current = power.current.clamp(1., 2.);
+        } else {
+            power.charging = false;
+        }
+    }
+    if mouse_inputs.just_pressed(MouseButton::Left) {
+        power.charging = true;
+        power.current = 1.;
+    }
+}
+
+fn apply_velocity(
+    mut objects: Query<(&mut Transform, &Velocity)>,
+    time: Res<Time>
+) {
+    for (mut transform, velocity) in &mut objects {
+        transform.translation += velocity.0 * time.delta_secs();
+    }
+}
+
+const GRAVITY: Vec3 = Vec3::new(0., -9.8, 0.);
+fn apply_gravity(
+    mut objects: Query<(&Transform, &mut Velocity)>,
+    time: Res<Time>
+) {
+    let g = GRAVITY * time.delta_secs() * 50.;
+    for (transform, mut v) in &mut objects {
+        if transform.translation.y > 0. {
+            **v += g;
+        }
+    }
+}
+
+fn bounce(
+    mut balls: Query<(&Transform, &mut Velocity)>,
+) {
+    for (transform, mut velocity) in &mut balls {
+        if transform.translation.y < 0. && velocity.y < 0.{
+            velocity.y *= -0.75;
+        }
+        velocity.x *= 0.99;
+        velocity.z *= 0.99;
+        if velocity.y.abs() < 0.5 {
+            velocity.y = 0.;
+        }
+    }
+}
+
+fn apply_player_velocity(
+    mut objects: Query<(&mut Transform, &PlayerVelocity)>,
+    time: Res<Time>
+) {
+    for (mut transform, velocity) in &mut objects {
+        transform.translation += velocity.0 * time.delta_secs();
+    }
+}
+
+fn apply_player_gravity(
+    mut players: Query<(&Transform, &mut PlayerVelocity, &Player)>,
+    time: Res<Time>
+) {
+    let g = GRAVITY * time.delta_secs() * 10.;
+    for (transform, mut velocity, player) in &mut players {
+        if player.creative {
+            return;
+        }
+        if transform.translation.y < 5. {
+            velocity.y = 0.;
+            return;
+        } else {
+            **velocity += g;
+        }
+    }
+}
