@@ -167,18 +167,37 @@ fn spawn_menu(
             bottom: Val::Vh(5.),
             left: Val::Vw(1.5),
             top: Val::Vh(5.),
+            flex_direction: FlexDirection::Column,
             border_radius: BorderRadius::all(Val::VMax(1.)),
             ..Default::default()
             },
             BackgroundColor(Color::linear_rgba(0.5, 0.5, 0.5, 0.5)),
-        )).with_child((
-            Text::new("Salut !"),
-            TextFont {
-                font_size: 30.,
-                ..Default::default()
-            },
-            TextColor(Color::linear_rgba(0.5, 0., 0., 1.))
-        ));
+        )).with_children(|parent| {
+            parent.spawn((
+                Text::new("Controls :"),
+                Node {
+                    margin: UiRect::all(Val::Percent(5.)),
+                    ..Default::default()
+                },
+                TextFont {
+                    font_size: 30.,
+                    ..Default::default()
+                },
+                TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
+            ));
+            parent.spawn((
+                Text::new("- ZQSD/WASD to move"),
+                Node {
+                    margin: UiRect::all(Val::Percent(5.)),
+                    ..Default::default()
+                },
+                TextFont {
+                    font_size: 25.,
+                    ..Default::default()
+                },
+                TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
+            ));
+        });
     } else if !cursor.visible && !query.is_empty() {
         for entity in &query {
             commands.entity(entity).despawn();
