@@ -1,9 +1,19 @@
 use bevy::{input::{common_conditions::input_just_pressed, mouse::AccumulatedMouseMotion}, prelude::*, window::{CursorOptions, PrimaryWindow, WindowFocused}};
 use rand::{SeedableRng, seq::IndexedRandom};
+
+fn round_to(value: f32, decimal_places: i32) -> f32 {
+    let factor: f32 = 10.0_f32.powi(decimal_places);
+    (value * factor).round() / factor
+}
+
 fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
-    app.add_systems(Startup, (spawn_camera, spawn_map));
+    app.add_systems(Startup, (
+        spawn_camera,
+        spawn_map.after(spawn_camera),
+        spawn_menu.after(spawn_camera),
+        spawn_hud.after(spawn_camera)));
     app.insert_resource(Time::<Fixed>::from_hz(60.));
     app.add_systems(FixedUpdate,(
         apply_velocity,
@@ -19,9 +29,10 @@ fn main() {
             toggle_grab.run_if(input_just_pressed(KeyCode::Escape)),
             spawn_ball,
             shoot_ball.before(spawn_ball).before(focus_event),
-            spawn_menu,
-            spawn_hud,
-            update_power_bar));
+            update_power_bar,
+            update_player_coords,
+            update_menu_visibility,
+            update_hud_visibility));
     app.add_observer(apply_grab);
     app.add_message::<BallSpawn>();
     app.init_resource::<BallData>();
@@ -151,93 +162,139 @@ struct MenuUi;
 #[derive(Component)]
 struct PlayerHud;
 
+#[derive(Component)]
+struct CoordsHud;
 
 fn spawn_menu(
     mut commands: Commands,
-    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
-    query: Query<Entity, With<MenuUi>>
 ) {
-    if cursor.visible && query.is_empty() {
-        commands.spawn((
-            MenuUi,
+    commands.spawn((
+        MenuUi,
+        Node {
+        position_type: PositionType::Absolute,
+        width: Val::Vw(30.),
+        height: Val::Vh(90.),
+        bottom: Val::Vh(5.),
+        left: Val::Vw(1.5),
+        top: Val::Vh(5.),
+        flex_direction: FlexDirection::Column,
+        border_radius: BorderRadius::all(Val::VMax(1.)),
+        ..Default::default()
+        },
+        BackgroundColor(Color::linear_rgba(0.5, 0.5, 0.5, 0.5)),
+    )).with_children(|parent| {
+        parent.spawn((
+            Text::new("Controls :"),
             Node {
-            position_type: PositionType::Absolute,
-            width: Val::Vw(30.),
-            height: Val::Vh(90.),
-            bottom: Val::Vh(5.),
-            left: Val::Vw(1.5),
-            top: Val::Vh(5.),
-            flex_direction: FlexDirection::Column,
-            border_radius: BorderRadius::all(Val::VMax(1.)),
-            ..Default::default()
+                margin: UiRect::all(Val::Percent(5.)),
+                ..Default::default()
             },
-            BackgroundColor(Color::linear_rgba(0.5, 0.5, 0.5, 0.5)),
-        )).with_children(|parent| {
-            parent.spawn((
-                Text::new("Controls :"),
-                Node {
-                    margin: UiRect::all(Val::Percent(5.)),
-                    ..Default::default()
-                },
-                TextFont {
-                    font_size: 30.,
-                    ..Default::default()
-                },
-                TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
-            ));
-            parent.spawn((
-                Text::new("- ZQSD/WASD to move"),
-                Node {
-                    margin: UiRect::all(Val::Percent(5.)),
-                    ..Default::default()
-                },
-                TextFont {
-                    font_size: 25.,
-                    ..Default::default()
-                },
-                TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
-            ));
-        });
-    } else if !cursor.visible && !query.is_empty() {
-        for entity in &query {
-            commands.entity(entity).despawn();
-        }
-    }
+            TextFont {
+                font_size: 30.,
+                ..Default::default()
+            },
+            TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
+        ));
+        parent.spawn((
+            Text::new("- ZQSD/WASD to move\n\
+                            - SPACE to jump\n\
+                            - LEFT CTRL or Mouse4 to sneak\n\
+                            - SHIFT to sprint\n\
+                            - LEFT CLICK to throw ball\n\
+                            - A to switch between creative/survival mode\n\
+                            - ESHAP to show/unshow this menu"),
+            Node {
+                margin: UiRect::all(Val::Percent(5.)),
+                ..Default::default()
+            },
+            TextFont {
+                font_size: 25.,
+                ..Default::default()
+            },
+            TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
+        ));
+    });
 }
 
 fn spawn_hud(
     mut commands: Commands,
-    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
-    query: Query<Entity, With<PlayerHud>>
+    player: Single<&mut Transform, With<Player>>,
 ) {
-    if !cursor.visible && query.is_empty() {
-        commands.spawn((
-            PlayerHud,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Vw(12.5),
-                height: Val::Vh(2.5),
-                bottom: Val::Vh(5.),
-                left: Val::Vw(86.),
-                border_radius: BorderRadius::all(Val::VMax(1.)),
+    let pos = player.translation;
+    commands.spawn((
+        PlayerHud,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Vw(12.5),
+            height: Val::Vh(2.5),
+            bottom: Val::Vh(5.),
+            left: Val::Vw(86.),
+            border_radius: BorderRadius::all(Val::VMax(1.)),
+            ..Default::default()
+        },
+        BackgroundColor(Color::linear_rgb(0.5, 0.5, 0.5)),
+    )).with_child((
+        Node {
+            position_type: PositionType::Absolute,
+            min_width: Val::Vw(MIN_FILL),
+            height: Val::Percent(100.),
+            border_radius: BorderRadius::all(Val::VMax(1.)),
+            ..Default::default()
+        },
+        BackgroundColor(NOT_CHARGING),
+        PowerBar { min: 1., max: 2.}
+    ));
+    commands.spawn((
+        PlayerHud,
+        CoordsHud,
+        Text::new(format!("X: {}\nY: {}\nZ: {}", round_to(pos.x, 2), round_to(pos.y, 2), round_to(pos.z, 2))),
+        TextFont {
+                font_size: 15.,
                 ..Default::default()
-            },
-            BackgroundColor(Color::linear_rgb(0.5, 0.5, 0.5)),
-        )).with_child((
-            Node {
-                position_type: PositionType::Absolute,
-                min_width: Val::Vw(MIN_FILL),
-                height: Val::Percent(100.),
-                border_radius: BorderRadius::all(Val::VMax(1.)),
-                ..Default::default()
-            },
-            BackgroundColor(NOT_CHARGING),
-            PowerBar { min: 1., max: 2.}
-        ));
-    } else if cursor.visible && !query.is_empty() {
-        for entity in &query {
-            commands.entity(entity).despawn();
+        },
+        TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Vh(90.),
+            left: Val::Vw(1.),
+            ..Default::default()
         }
+    ));
+}
+
+fn update_menu_visibility(
+    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
+    visibility: Query<&mut Visibility, With<MenuUi>>
+) {
+    for mut vis in visibility {
+        if cursor.visible {
+            *vis = Visibility::Visible;
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+fn update_hud_visibility(
+    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
+    visibility: Query<&mut Visibility, With<PlayerHud>>
+) {
+    for mut vis in visibility {
+        if !cursor.visible {
+            *vis = Visibility::Visible;
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+fn update_player_coords(
+    mut coords: Query<&mut Text, With<CoordsHud>>,
+    player: Single<&mut Transform, With<Player>>
+) {
+    let pos = player.translation;
+    for mut text in &mut coords {
+        text.0 = format!("X: {}\nY: {}\nZ: {}", round_to(pos.x, 2), round_to(pos.y, 2), round_to(pos.z, 2));
     }
 }
 
