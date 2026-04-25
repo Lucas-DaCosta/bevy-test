@@ -6,17 +6,15 @@ fn round_to(value: f32, decimal_places: i32) -> f32 {
     (value * factor).round() / factor
 }
 
-#[derive(PartialEq)]
-enum CollidesDirection {
-    NORTH,
-    SOUTH,
-    WEST,
-    EST,
-    UP,
-    DOWN,
-    NONE
+#[derive(Debug, Default)]
+struct Collisions {
+    north: bool,
+    south: bool,
+    east: bool,
+    west: bool,
+    up: bool,
+    down: bool   
 }
-
 
 fn main() {
     let mut app = App::new();
@@ -136,7 +134,7 @@ const EMPTY_SPACE: f32 = 12.5 - MIN_FILL;
 struct Hitbox {
     coords_gap: Vec3,
     size: Vec3,
-    collides: CollidesDirection
+    collisions: Collisions
 }
 
 impl Hitbox {
@@ -144,7 +142,7 @@ impl Hitbox {
         Self {
             coords_gap,
             size: Vec3::new(x_length, y_length, z_length),
-            collides: CollidesDirection::NONE
+            collisions: Collisions::default()
         }
     }
 }
@@ -185,12 +183,12 @@ fn spawn_map(
     ));
     commands.spawn((
         Transform::from_translation(Vec3::new(30., 10., 0.)),
-        Mesh3d(meshes.add(Cuboid::new(10., 20., 10.))),
+        Mesh3d(meshes.add(Cuboid::new(10., 100., 10.))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::linear_rgb(0., 1., 0.),
             ..Default::default()
         })),
-        Hitbox::new(Vec3::ZERO, 10., 20., 10.)
+        Hitbox::new(Vec3::ZERO, 10., 100., 10.)
     ));
     commands.spawn((
         Transform::from_translation(Vec3::new(-30., 11., 0.)),
@@ -433,13 +431,13 @@ fn player_move(
     let (mut transform, mut player_data, mut velocity, hitbox) = player.into_inner();
     if input.pressed(KeyCode::KeyA) {
         delta.x -= 1.;
-    } 
+    }
     if input.pressed(KeyCode::KeyD) {
         delta.x += 1.;
     }
     if input.pressed(KeyCode::KeyW) {
         delta.z += 1.;
-    } 
+    }
     if input.pressed(KeyCode::KeyS) {
         delta.z -= 1.;
     }
@@ -450,7 +448,7 @@ fn player_move(
     // fly or jump depending on player gamemode
     if player_data.creative && input.pressed(KeyCode::Space) {
         to_move.y += 1.;
-    } else if input.pressed(KeyCode::Space) && hitbox.collides == CollidesDirection::DOWN {
+    } else if input.pressed(KeyCode::Space) && hitbox.collisions.down {
         velocity.y = player_data.velocity.y;
         to_move.y += 1.;
     }
@@ -537,9 +535,8 @@ fn apply_gravity(
 ) {
     let g = GRAVITY * time.delta_secs() * 50.;
     for (mut v, hitbox) in &mut objects {
-        match hitbox.collides {
-            CollidesDirection::DOWN => {},
-            _ => **v += g,
+        if !hitbox.collisions.down {
+            **v += g;
         }
     }
 }
@@ -548,35 +545,22 @@ fn bounce(
     mut balls: Query<(&Hitbox, &mut Velocity), Without<Player>>,
 ) {
     for (hitbox, mut velocity) in &mut balls {
-        match hitbox.collides {
-            CollidesDirection::DOWN => {
-                velocity.y *= -0.75;
-            },
-            CollidesDirection::UP => {
-                velocity.y *= -0.75;
-            },
-            _ => {},
+        if hitbox.collisions.down || hitbox.collisions.up {
+            velocity.y *= -0.75;
         }
-        // if velocity.x < 0.001 && velocity.z < 0.001 {
-        //     velocity.x = 0.;
-        //     velocity.z = 0.;
-        // } else {
-        //     velocity.x *= 0.99;
-        //     velocity.z *= 0.99;
-        // }
         velocity.x *= 0.99;
         velocity.z *= 0.99;
     }
 }
 
 fn apply_player_velocity(
-    mut players: Query<(&mut Transform, &Velocity, &Player), With<Player>>,
+    mut players: Query<(&mut Transform, &Velocity, &Player)>,
     time: Res<Time>
 ) {
     for (mut transform, velocity, player_data) in &mut players {
         if !player_data.creative {
             transform.translation += velocity.0 * time.delta_secs();
-        } 
+        }
     }
 }
 
@@ -587,13 +571,13 @@ fn apply_player_gravity(
     let g = GRAVITY * time.delta_secs() * 10.;
     for (mut velocity, hitbox, player) in &mut players {
         if !player.creative {
-            match hitbox.collides {
-                CollidesDirection::DOWN => **velocity *= 0.,
-                CollidesDirection::UP => {
-                    **velocity *= 0.;
-                    **velocity += g;
-                },
-                _ => **velocity += g,
+            if hitbox.collisions.down {
+                **velocity *= 0.;
+            } else if hitbox.collisions.up {
+                **velocity *= 0.;
+                **velocity += g;
+            } else {
+                **velocity += g;
             }
         }
     }
@@ -608,7 +592,7 @@ fn is_collised(
         let center1 = mov_coords.translation + mov_hit.coords_gap + **velo * time.delta_secs();
         let a_min = center1 - mov_hit.size / 2.;
         let a_max = center1 + mov_hit.size / 2.;
-        let mut collides = CollidesDirection::NONE;
+        let mut collides = Collisions::default();
 
         for (object_coords, object_hit) in &objects {
             let center2 = object_coords.translation + object_hit.coords_gap;
@@ -626,31 +610,31 @@ fn is_collised(
                 if overlap_y <= overlap_x && overlap_y <= overlap_z {
                     // Collision verticale
                     if center1.y > center2.y {
-                        collides = CollidesDirection::DOWN; // sol
+                        collides.down = true; // sol
                     } else {
-                        collides = CollidesDirection::UP;   // plafond
+                        collides.up = true;   // plafond
                     }
                 } else if overlap_x <= overlap_y && overlap_x <= overlap_z {
                     // Collision horizontale X
                     if center1.x > center2.x {
                         println!("Tu touches l'ouest mec");
-                        collides = CollidesDirection::WEST;
+                        collides.west = true;
                     } else {
                         println!("Tu touches l'est mec");
-                        collides = CollidesDirection::EST;
+                        collides.east = true;
                     }
                 } else {
                     // Collision horizontale Z
                     if center1.z > center2.z {
                         println!("Tu touches le sud mec");
-                        collides = CollidesDirection::SOUTH;
+                        collides.south = true;
                     } else {
                         println!("Tu touches le nord mec");
-                        collides = CollidesDirection::NORTH;
+                        collides.north = true;
                     }
                 }
             }
         }
-        mov_hit.collides = collides;
+        mov_hit.collisions = collides;
     }
 }
