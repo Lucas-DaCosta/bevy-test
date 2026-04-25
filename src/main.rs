@@ -171,6 +171,7 @@ fn spawn_map(
             Transform::from_translation(Vec3::new((-8. + h as f32) * 2., 5., -30.)),
             Mesh3d(ball_data.mesh()),
             MeshMaterial3d(ball_data.materials[h].clone()),
+            Hitbox::new(Vec3::ZERO, 2., 2., 2.)
         ));
     }
     commands.spawn((
@@ -181,6 +182,33 @@ fn spawn_map(
             ..Default::default()
         })),
         Hitbox::new(Vec3::ZERO, 500., 20., 500.)
+    ));
+    commands.spawn((
+        Transform::from_translation(Vec3::new(30., 10., 0.)),
+        Mesh3d(meshes.add(Cuboid::new(10., 20., 10.))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0., 1., 0.),
+            ..Default::default()
+        })),
+        Hitbox::new(Vec3::ZERO, 10., 20., 10.)
+    ));
+    commands.spawn((
+        Transform::from_translation(Vec3::new(-30., 11., 0.)),
+        Mesh3d(meshes.add(Cuboid::new(10., 10., 10.))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0., 1., 1.),
+            ..Default::default()
+        })),
+        Hitbox::new(Vec3::ZERO, 10., 10., 10.)
+    ));
+    commands.spawn((
+        Transform::from_translation(Vec3::new(-30., 20., -20.)),
+        Mesh3d(meshes.add(Cuboid::new(10., 10., 10.))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0., 1., 1.),
+            ..Default::default()
+        })),
+        Hitbox::new(Vec3::ZERO, 10., 10., 10.)
     ));
 }
 
@@ -402,7 +430,7 @@ fn player_move(
     }
     let speed_multiplier = if input.pressed(KeyCode::ShiftLeft) { 3. } else { 1. };
     let mut delta = Vec3::ZERO;
-    let (mut transform, mut player_data, mut velocity, mut hitbox) = player.into_inner();
+    let (mut transform, mut player_data, mut velocity, hitbox) = player.into_inner();
     if input.pressed(KeyCode::KeyA) {
         delta.x -= 1.;
     } 
@@ -422,7 +450,7 @@ fn player_move(
     // fly or jump depending on player gamemode
     if player_data.creative && input.pressed(KeyCode::Space) {
         to_move.y += 1.;
-    } else if input.pressed(KeyCode::Space) && hitbox.collides == CollidesDirection::SOUTH {
+    } else if input.pressed(KeyCode::Space) && hitbox.collides == CollidesDirection::DOWN {
         velocity.y = player_data.velocity.y;
         to_move.y += 1.;
     }
@@ -510,7 +538,7 @@ fn apply_gravity(
     let g = GRAVITY * time.delta_secs() * 50.;
     for (mut v, hitbox) in &mut objects {
         match hitbox.collides {
-            CollidesDirection::SOUTH => {},
+            CollidesDirection::DOWN => {},
             _ => **v += g,
         }
     }
@@ -521,9 +549,11 @@ fn bounce(
 ) {
     for (hitbox, mut velocity) in &mut balls {
         match hitbox.collides {
-            CollidesDirection::SOUTH => {
-                **velocity *= 0.75;
-                velocity.y *= -1.;
+            CollidesDirection::DOWN => {
+                velocity.y *= -0.75;
+            },
+            CollidesDirection::UP => {
+                velocity.y *= -0.75;
             },
             _ => {},
         }
@@ -534,8 +564,8 @@ fn bounce(
         //     velocity.x *= 0.99;
         //     velocity.z *= 0.99;
         // }
-        // velocity.x *= 0.99;
-        // velocity.y *= 0.99;
+        velocity.x *= 0.99;
+        velocity.z *= 0.99;
     }
 }
 
@@ -558,7 +588,11 @@ fn apply_player_gravity(
     for (mut velocity, hitbox, player) in &mut players {
         if !player.creative {
             match hitbox.collides {
-                CollidesDirection::SOUTH => **velocity *= 0.,
+                CollidesDirection::DOWN => **velocity *= 0.,
+                CollidesDirection::UP => {
+                    **velocity *= 0.;
+                    **velocity += g;
+                },
                 _ => **velocity += g,
             }
         }
@@ -571,20 +605,52 @@ fn is_collised(
     time: Res<Time>
 ) {
     for (mov_coords, mut mov_hit, velo) in &mut moving_objects {
-        let center1 = mov_coords.translation + mov_hit.coords_gap + **velo * time.delta_secs() ;
+        let center1 = mov_coords.translation + mov_hit.coords_gap + **velo * time.delta_secs();
         let a_min = center1 - mov_hit.size / 2.;
         let a_max = center1 + mov_hit.size / 2.;
         let mut collides = CollidesDirection::NONE;
+
         for (object_coords, object_hit) in &objects {
             let center2 = object_coords.translation + object_hit.coords_gap;
             let b_min = center2 - object_hit.size / 2.;
             let b_max = center2 + object_hit.size / 2.;
-            if ((b_min.x <= a_min.x && a_min.x <= b_max.x) || (b_min.x <= a_max.x && a_max.x <= b_max.x))
-            && ((b_min.y <= a_min.y && a_min.y <= b_max.y) || (b_min.y <= a_max.y && a_max.y <= b_max.y))
-            && ((b_min.z <= a_min.z && a_min.z <= b_max.z) || (b_min.z <= a_max.z && a_max.z <= b_max.z)) {
-                collides = CollidesDirection::SOUTH;
+
+            // Chevauchement sur chaque axe
+            let overlap_x = a_max.x.min(b_max.x) - a_min.x.max(b_min.x);
+            let overlap_y = a_max.y.min(b_max.y) - a_min.y.max(b_min.y);
+            let overlap_z = a_max.z.min(b_max.z) - a_min.z.max(b_min.z);
+
+            // Collision seulement si les 3 axes se chevauchent
+            if overlap_x > 0. && overlap_y > 0. && overlap_z > 0. {
+                // L'axe avec le plus petit overlap = direction de collision
+                if overlap_y <= overlap_x && overlap_y <= overlap_z {
+                    // Collision verticale
+                    if center1.y > center2.y {
+                        collides = CollidesDirection::DOWN; // sol
+                    } else {
+                        collides = CollidesDirection::UP;   // plafond
+                    }
+                } else if overlap_x <= overlap_y && overlap_x <= overlap_z {
+                    // Collision horizontale X
+                    if center1.x > center2.x {
+                        println!("Tu touches l'ouest mec");
+                        collides = CollidesDirection::WEST;
+                    } else {
+                        println!("Tu touches l'est mec");
+                        collides = CollidesDirection::EST;
+                    }
+                } else {
+                    // Collision horizontale Z
+                    if center1.z > center2.z {
+                        println!("Tu touches le sud mec");
+                        collides = CollidesDirection::SOUTH;
+                    } else {
+                        println!("Tu touches le nord mec");
+                        collides = CollidesDirection::NORTH;
+                    }
+                }
             }
         }
         mov_hit.collides = collides;
-    };
+    }
 }
