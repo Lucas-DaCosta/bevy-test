@@ -6,6 +6,18 @@ fn round_to(value: f32, decimal_places: i32) -> f32 {
     (value * factor).round() / factor
 }
 
+#[derive(PartialEq)]
+enum CollidesDirection {
+    NORTH,
+    SOUTH,
+    WEST,
+    EST,
+    UP,
+    DOWN,
+    NONE
+}
+
+
 fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
@@ -16,11 +28,12 @@ fn main() {
         spawn_hud.after(spawn_camera)));
     app.insert_resource(Time::<Fixed>::from_hz(60.));
     app.add_systems(FixedUpdate,(
-        apply_velocity,
-        apply_gravity.before(apply_velocity),
+        is_collised,
+        apply_velocity.after(is_collised),
+        apply_gravity.before(apply_velocity).after(is_collised),
         bounce.after(apply_velocity),
-        apply_player_velocity,
-        apply_player_gravity.before(apply_player_velocity)
+        apply_player_velocity.after(is_collised),
+        apply_player_gravity.before(apply_player_velocity).after(is_collised)
     ));
     app.add_systems(Update, 
         (player_look,
@@ -48,12 +61,11 @@ struct Player {
     speed: f32,
     creative: bool,
     velocity: Vec3,
-    sneak: bool
 }
 
 impl Default for Player {
     fn default() -> Self {
-        Player { speed: 50., creative: false, velocity: Vec3::Y * 20., sneak: false }
+        Player { speed: 50., creative: false, velocity: Vec3::Y * 20. }
     }
 }
 
@@ -104,9 +116,6 @@ impl FromWorld for BallData {
 #[derive(Component, Deref, DerefMut)]
 struct Velocity(Vec3);
 
-#[derive(Component, Deref, DerefMut)]
-struct PlayerVelocity(Vec3);
-
 #[derive(Resource)]
 struct Power {
     charging: bool,
@@ -123,12 +132,30 @@ const NOT_CHARGING: Color = Color::linear_rgb(0.2, 0.2, 0.2);
 const MIN_FILL: f32 = 12.5 / 10.;
 const EMPTY_SPACE: f32 = 12.5 - MIN_FILL;
 
+#[derive(Component)]
+struct Hitbox {
+    coords_gap: Vec3,
+    size: Vec3,
+    collides: CollidesDirection
+}
+
+impl Hitbox {
+    fn new(coords_gap: Vec3, x_length: f32, y_length: f32, z_length: f32) -> Self {
+        Self {
+            coords_gap,
+            size: Vec3::new(x_length, y_length, z_length),
+            collides: CollidesDirection::NONE
+        }
+    }
+}
+
 fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Transform::from_translation(Vec3::new(0., 5., 0.)),
         Camera3d::default(),
         Player::default(),
-        PlayerVelocity(Vec3::ZERO)
+        Velocity(Vec3::ZERO),
+        Hitbox::new(Vec3::new(0., -2.5, 0.), 2.5, 5., 2.5)
     ));
 }
 
@@ -147,12 +174,13 @@ fn spawn_map(
         ));
     }
     commands.spawn((
-        Transform::from_translation(Vec3::new(0., -2., 0.)),
-        Mesh3d(meshes.add(Cuboid::new(500., 1., 500.))),
+        Transform::from_translation(Vec3::new(0., -10., 0.)),
+        Mesh3d(meshes.add(Cuboid::new(2500., 20., 2500.))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::linear_rgb(1., 0., 0.),
             ..Default::default()
-        }))
+        })),
+        Hitbox::new(Vec3::ZERO, 500., 20., 500.)
     ));
 }
 
@@ -363,7 +391,7 @@ fn toggle_grab(
 }
 
 fn player_move(
-    player: Single<(&mut Transform, &mut Player, &mut PlayerVelocity), With<Player>>,
+    player: Single<(&mut Transform, &mut Player, &mut Velocity, &mut Hitbox), With<Player>>,
     input: Res<ButtonInput<KeyCode>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
@@ -374,7 +402,7 @@ fn player_move(
     }
     let speed_multiplier = if input.pressed(KeyCode::ShiftLeft) { 3. } else { 1. };
     let mut delta = Vec3::ZERO;
-    let (mut transform, mut player_data, mut velocity) = player.into_inner();
+    let (mut transform, mut player_data, mut velocity, mut hitbox) = player.into_inner();
     if input.pressed(KeyCode::KeyA) {
         delta.x -= 1.;
     } 
@@ -391,30 +419,26 @@ fn player_move(
     let right = transform.right().as_vec3() * delta.x;
     let mut to_move = forward + right;
     to_move.y = 0.;
-    // enable/disable this to fly/unfly
+    // fly or jump depending on player gamemode
     if player_data.creative && input.pressed(KeyCode::Space) {
         to_move.y += 1.;
-    } else if input.pressed(KeyCode::Space) && transform.translation.y <= 5. {
+    } else if input.pressed(KeyCode::Space) && hitbox.collides == CollidesDirection::SOUTH {
         velocity.y = player_data.velocity.y;
         to_move.y += 1.;
     }
     if player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) {
         to_move.y -= 1.;
     }
-    if !player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) {
-        player_data.sneak = true;
-    } else {
-        player_data.sneak = false;
-    }
     if input.just_pressed(KeyCode::KeyQ) {
         player_data.creative = !player_data.creative;
+        *velocity = Velocity(Vec3::ZERO);
     }
     to_move = to_move.normalize_or_zero();
     transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
-    if !player_data.creative && player_data.sneak && transform.translation.y > 4. {
+    if !player_data.creative && (input.just_pressed(KeyCode::ControlLeft) || mouse_input.just_pressed(MouseButton::Forward)) {
         transform.translation.y -= 1.;
         player_data.speed *= 0.25;
-    } else if !player_data.creative && !player_data.sneak && transform.translation.y <= 4. {
+    } else if !player_data.creative && (input.just_released(KeyCode::ControlLeft) || mouse_input.just_released(MouseButton::Forward)) {
         transform.translation.y += 1.;
         player_data.speed *= 4.;
     }
@@ -430,7 +454,8 @@ fn spawn_ball(
             Transform::from_translation(spawn.position),
             Mesh3d(ball_data.mesh()),
             MeshMaterial3d(ball_data.material()),
-            Velocity(spawn.velocity * spawn.power * 5.)
+            Velocity(spawn.velocity * spawn.power * 5.),
+            Hitbox::new(Vec3::ZERO, 2., 2., 2.)
         ));
     }
 
@@ -469,7 +494,7 @@ fn shoot_ball(
 }
 
 fn apply_velocity(
-    mut objects: Query<(&mut Transform, &Velocity)>,
+    mut objects: Query<(&mut Transform, &Velocity), Without<Player>>,
     time: Res<Time>
 ) {
     for (mut transform, velocity) in &mut objects {
@@ -479,55 +504,87 @@ fn apply_velocity(
 
 const GRAVITY: Vec3 = Vec3::new(0., -9.8, 0.);
 fn apply_gravity(
-    mut objects: Query<(&Transform, &mut Velocity)>,
+    mut objects: Query<(&mut Velocity, &Hitbox), Without<Player>>,
     time: Res<Time>
 ) {
     let g = GRAVITY * time.delta_secs() * 50.;
-    for (transform, mut v) in &mut objects {
-        if transform.translation.y > 0. {
-            **v += g;
+    for (mut v, hitbox) in &mut objects {
+        match hitbox.collides {
+            CollidesDirection::SOUTH => {},
+            _ => **v += g,
         }
     }
 }
 
 fn bounce(
-    mut balls: Query<(&Transform, &mut Velocity)>,
+    mut balls: Query<(&Hitbox, &mut Velocity), Without<Player>>,
 ) {
-    for (transform, mut velocity) in &mut balls {
-        if transform.translation.y < 0. && velocity.y < 0.{
-            velocity.y *= -0.75;
+    for (hitbox, mut velocity) in &mut balls {
+        match hitbox.collides {
+            CollidesDirection::SOUTH => {
+                **velocity *= 0.75;
+                velocity.y *= -1.;
+            },
+            _ => {},
         }
-        velocity.x *= 0.99;
-        velocity.z *= 0.99;
-        if velocity.y.abs() < 0.5 {
-            velocity.y = 0.;
-        }
+        // if velocity.x < 0.001 && velocity.z < 0.001 {
+        //     velocity.x = 0.;
+        //     velocity.z = 0.;
+        // } else {
+        //     velocity.x *= 0.99;
+        //     velocity.z *= 0.99;
+        // }
+        // velocity.x *= 0.99;
+        // velocity.y *= 0.99;
     }
 }
 
 fn apply_player_velocity(
-    mut objects: Query<(&mut Transform, &PlayerVelocity)>,
+    mut players: Query<(&mut Transform, &Velocity, &Player), With<Player>>,
     time: Res<Time>
 ) {
-    for (mut transform, velocity) in &mut objects {
-        transform.translation += velocity.0 * time.delta_secs();
+    for (mut transform, velocity, player_data) in &mut players {
+        if !player_data.creative {
+            transform.translation += velocity.0 * time.delta_secs();
+        } 
     }
 }
 
 fn apply_player_gravity(
-    mut players: Query<(&Transform, &mut PlayerVelocity, &Player)>,
+    mut players: Query<(&mut Velocity, &Hitbox, &Player)>,
     time: Res<Time>
 ) {
     let g = GRAVITY * time.delta_secs() * 10.;
-    for (transform, mut velocity, player) in &mut players {
-        if player.creative {
-            return;
-        }
-        if transform.translation.y < 5. {
-            velocity.y = 0.;
-            return;
-        } else {
-            **velocity += g;
+    for (mut velocity, hitbox, player) in &mut players {
+        if !player.creative {
+            match hitbox.collides {
+                CollidesDirection::SOUTH => **velocity *= 0.,
+                _ => **velocity += g,
+            }
         }
     }
+}
+
+fn is_collised(
+    objects: Query<(&Transform, &Hitbox), Without<Velocity>>, 
+    mut moving_objects: Query<(&Transform, &mut Hitbox, &Velocity)>,
+    time: Res<Time>
+) {
+    for (mov_coords, mut mov_hit, velo) in &mut moving_objects {
+        let center1 = mov_coords.translation + mov_hit.coords_gap + **velo * time.delta_secs() ;
+        let a_min = center1 - mov_hit.size / 2.;
+        let a_max = center1 + mov_hit.size / 2.;
+        let mut collides = CollidesDirection::NONE;
+        for (object_coords, object_hit) in &objects {
+            let center2 = object_coords.translation + object_hit.coords_gap;
+            let b_min = center2 - object_hit.size / 2.;
+            let b_max = center2 + object_hit.size / 2.;
+            if ((b_min.x <= a_min.x && a_min.x <= b_max.x) || (b_min.x <= a_max.x && a_max.x <= b_max.x))
+            && ((b_min.y <= a_min.y && a_min.y <= b_max.y) || (b_min.y <= a_max.y && a_max.y <= b_max.y))
+            && ((b_min.z <= a_min.z && a_min.z <= b_max.z) || (b_min.z <= a_max.z && a_max.z <= b_max.z)) {
+                collides = CollidesDirection::SOUTH;
+            }
+        }
+        mov_hit.collides = collides;
+    };
 }
