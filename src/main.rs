@@ -314,6 +314,36 @@ fn spawn_hud(
             ..Default::default()
         }
     ));
+    commands.spawn((
+        PlayerHud,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.),
+            height: Val::Percent(100.),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..Default::default()
+        }
+    )).with_children(|parent| {
+        parent.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::VMax(1.),
+                height: Val::VMax(0.15),
+                ..Default::default()
+            },
+            BackgroundColor(Color::linear_rgba(1., 1., 1., 1.))
+        ));
+        parent.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::VMax(0.15),
+                height: Val::VMax(1.),
+                ..Default::default()
+            },
+            BackgroundColor(Color::linear_rgba(1., 1., 1., 1.))
+        ));
+    });
 }
 
 fn update_menu_visibility(
@@ -460,10 +490,12 @@ fn player_move(
         *velocity = Velocity(Vec3::ZERO);
     }
     to_move = to_move.normalize_or_zero();
-    if to_move.x > 0. && hitbox.collisions.east { to_move.x = 0.};
-    if to_move.x < 0. && hitbox.collisions.west { to_move.x = 0.};
-    if to_move.z > 0. && hitbox.collisions.north { to_move.z = 0.};
-    if to_move.z < 0. && hitbox.collisions.south { to_move.z = 0.};
+    if !player_data.creative {
+        if to_move.x > 0. && hitbox.collisions.east { to_move.x = 0.};
+        if to_move.x < 0. && hitbox.collisions.west { to_move.x = 0.};
+        if to_move.z > 0. && hitbox.collisions.north { to_move.z = 0.};
+        if to_move.z < 0. && hitbox.collisions.south { to_move.z = 0.};
+    }
     transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
     if !player_data.creative && (input.just_pressed(KeyCode::ControlLeft) || mouse_input.just_pressed(MouseButton::Forward)) {
         transform.translation.y -= 1.;
@@ -523,11 +555,17 @@ fn shoot_ball(
     }
 }
 
+const MAX_VELOCITY: f32 = 125.;
+// La vraie règle est que MAX_VELOCITY * delta_secs doit être inférieur à la taille minimale de tes objets. 
+// À 60fps, delta_secs ≈ 0.016s, donc avec des hitbox de taille 2, il faut MAX_VELOCITY < 2 / 0.016 = 125.
 fn apply_velocity(
-    mut objects: Query<(&mut Transform, &Velocity), Without<Player>>,
+    mut objects: Query<(&mut Transform, &mut Velocity), Without<Player>>,
     time: Res<Time>
 ) {
-    for (mut transform, velocity) in &mut objects {
+    for (mut transform, mut velocity) in &mut objects {
+        // velocity.x = velocity.x.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+        // velocity.y = velocity.y.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+        // velocity.z = velocity.z.clamp(-MAX_VELOCITY, MAX_VELOCITY);
         transform.translation += velocity.0 * time.delta_secs();
     }
 }
@@ -551,6 +589,12 @@ fn bounce(
     for (hitbox, mut velocity) in &mut balls {
         if hitbox.collisions.down || hitbox.collisions.up {
             velocity.y *= -0.75;
+        }
+        if hitbox.collisions.north || hitbox.collisions.south {
+            velocity.z *= -1.;
+        }
+        if hitbox.collisions.west || hitbox.collisions.east {
+            velocity.x *= -1.
         }
         velocity.x *= 0.99;
         velocity.z *= 0.99;
@@ -621,19 +665,15 @@ fn is_collised(
                 } else if overlap_x <= overlap_y && overlap_x <= overlap_z {
                     // Collision horizontale X
                     if center1.x > center2.x {
-                        println!("Tu touches l'ouest mec");
                         collides.west = true;
                     } else {
-                        println!("Tu touches l'est mec");
                         collides.east = true;
                     }
                 } else {
                     // Collision horizontale Z
                     if center1.z > center2.z {
-                        println!("Tu touches le sud mec");
                         collides.south = true;
                     } else {
-                        println!("Tu touches le nord mec");
                         collides.north = true;
                     }
                 }
