@@ -460,6 +460,10 @@ fn player_move(
         *velocity = Velocity(Vec3::ZERO);
     }
     to_move = to_move.normalize_or_zero();
+    if to_move.x > 0. && hitbox.collisions.east { to_move.x = 0.};
+    if to_move.x < 0. && hitbox.collisions.west { to_move.x = 0.};
+    if to_move.z > 0. && hitbox.collisions.north { to_move.z = 0.};
+    if to_move.z < 0. && hitbox.collisions.south { to_move.z = 0.};
     transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
     if !player_data.creative && (input.just_pressed(KeyCode::ControlLeft) || mouse_input.just_pressed(MouseButton::Forward)) {
         transform.translation.y -= 1.;
