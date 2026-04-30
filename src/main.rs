@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use bevy::{input::{common_conditions::input_just_pressed, mouse::AccumulatedMouseMotion}, prelude::*, window::{CursorOptions, PrimaryWindow, WindowFocused}};
 use rand::{SeedableRng, seq::IndexedRandom};
 
@@ -43,7 +45,10 @@ fn main() {
             update_power_bar,
             update_player_coords,
             update_menu_visibility,
-            update_hud_visibility));
+            update_hud_visibility,
+            update_player_model.after(player_move),
+            switch_fov
+        ));
     app.add_observer(apply_grab);
     app.add_message::<BallSpawn>();
     app.init_resource::<BallData>();
@@ -54,16 +59,23 @@ fn main() {
     app.run();
 }
 
+enum CameraPov {
+    FirstPerson,
+    ThirdPerson
+}
+
 #[derive(Component)]
 struct Player {
     speed: f32,
     creative: bool,
     velocity: Vec3,
+    sneaking: bool,
+    camera_pov: CameraPov
 }
 
 impl Default for Player {
     fn default() -> Self {
-        Player { speed: 50., creative: false, velocity: Vec3::Y * 20. }
+        Player { speed: 50., creative: false, velocity: Vec3::Y * 20., sneaking: false, camera_pov: CameraPov::FirstPerson}
     }
 }
 
@@ -147,14 +159,52 @@ impl Hitbox {
     }
 }
 
-fn spawn_camera(mut commands: Commands) {
+#[derive(Component)]
+struct PlayerCamera;
+
+#[derive(Component)]
+struct PlayerModel;
+
+fn spawn_camera(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>
+) {
     commands.spawn((
         Transform::from_translation(Vec3::new(0., 5., 0.)),
-        Camera3d::default(),
         Player::default(),
         Velocity(Vec3::ZERO),
-        Hitbox::new(Vec3::new(0., -2.5, 0.), 2.5, 5., 2.5)
+        Hitbox::new(Vec3::new(0., -2.5, 0.), 2.5, 5., 2.5),
+    )).with_child((
+        PlayerCamera,
+        Transform::from_translation(Vec3::new(0., 0., 0.)),
+        Camera3d::default()
     ));
+    commands.spawn((
+        SceneRoot(asset_server.load("models/amogus/scene.gltf#Scene0")),
+        Transform::from_translation(Vec3::ZERO)
+        .with_scale(Vec3::splat(0.03))
+        .with_rotation(Quat::from_rotation_y(PI)),
+        PlayerModel
+    ));
+}
+
+fn update_player_model(
+    model: Single<(&mut Transform, &mut Visibility), (With<PlayerModel>, Without<Player>)>,
+    player: Single<(&Transform, &Hitbox, &Player), (With<Player>, Without<PlayerModel>)> 
+) {
+    let (coords, hitbox, player_data) = player.into_inner();
+    let (mut model_coords, mut visibility) = model.into_inner();
+    model_coords.translation = coords.translation + hitbox.coords_gap;
+    let (yaw, _, _) = coords.rotation.to_euler(EulerRot::YXZ);
+    model_coords.rotation = Quat::from_rotation_y(yaw + PI);
+    match player_data.camera_pov {
+        CameraPov::FirstPerson => {
+            *visibility = Visibility::Hidden;
+        },
+        CameraPov::ThirdPerson => {
+            *visibility = Visibility::Visible;
+        }
+    }
 }
 
 fn spawn_map(
@@ -162,6 +212,7 @@ fn spawn_map(
     ball_data: Res<BallData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>
 ) {
     commands.spawn(DirectionalLight::default());
     for h in 0..ball_data.materials.len() {
@@ -179,7 +230,7 @@ fn spawn_map(
             base_color: Color::linear_rgb(1., 0., 0.),
             ..Default::default()
         })),
-        Hitbox::new(Vec3::ZERO, 500., 20., 500.)
+        Hitbox::new(Vec3::ZERO, 2500., 20., 2500.)
     ));
     commands.spawn((
         Transform::from_translation(Vec3::new(30., 10., 0.)),
@@ -208,6 +259,19 @@ fn spawn_map(
         })),
         Hitbox::new(Vec3::ZERO, 10., 10., 10.)
     ));
+    commands.spawn((
+        Transform::from_translation(Vec3::new(-30., 9.5, 20.)),
+        Mesh3d(meshes.add(Cuboid::new(10., 10., 10.))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0., 1., 1.),
+            ..Default::default()
+        })),
+        Hitbox::new(Vec3::ZERO, 10., 10., 10.)
+    ));
+    commands.spawn((
+        SceneRoot(asset_server.load("models/amogus/scene.gltf#Scene0")),
+        Transform::from_translation(Vec3::new(50., 0., 50.)).with_scale(Vec3::splat(0.04))
+    ));
 }
 
 #[derive(Component)]
@@ -235,7 +299,7 @@ fn spawn_menu(
         border_radius: BorderRadius::all(Val::VMax(1.)),
         ..Default::default()
         },
-        BackgroundColor(Color::linear_rgba(0.5, 0.5, 0.5, 0.5)),
+        BackgroundColor(Color::linear_rgba(0., 0., 0., 0.67)),
     )).with_children(|parent| {
         parent.spawn((
             Text::new("Controls :"),
@@ -446,8 +510,28 @@ fn toggle_grab(
     commands.trigger(GrabEvent(window.focused));
 }
 
+fn switch_fov(
+    mut player: Single<&mut Player, With<Player>>,
+    mut camera: Single<&mut Transform, With<Camera>>,
+    input: Res<ButtonInput<KeyCode>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+) {
+    if input.just_pressed(KeyCode::KeyE) || mouse_input.just_pressed(MouseButton::Back) {
+        match player.camera_pov {
+            CameraPov::FirstPerson => {
+                camera.translation += Vec3::new(0., 5., 0.);
+                player.camera_pov = CameraPov::ThirdPerson;
+            },
+            CameraPov::ThirdPerson => {
+                camera.translation -= Vec3::new(0., 5., 0.);
+                player.camera_pov = CameraPov::FirstPerson;
+            }
+        }
+    }
+}
+
 fn player_move(
-    player: Single<(&mut Transform, &mut Player, &mut Velocity, &mut Hitbox), With<Player>>,
+    player: Single<(&mut Transform, &mut Player, &mut Velocity, &Hitbox), With<Player>>,
     input: Res<ButtonInput<KeyCode>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
@@ -497,12 +581,19 @@ fn player_move(
         if to_move.z < 0. && hitbox.collisions.south { to_move.z = 0.};
     }
     transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
-    if !player_data.creative && (input.just_pressed(KeyCode::ControlLeft) || mouse_input.just_pressed(MouseButton::Forward)) {
+    if !player_data.creative && (input.just_pressed(KeyCode::ControlLeft) || mouse_input.just_pressed(MouseButton::Forward)) && !player_data.sneaking {
         transform.translation.y -= 1.;
         player_data.speed *= 0.25;
-    } else if !player_data.creative && (input.just_released(KeyCode::ControlLeft) || mouse_input.just_released(MouseButton::Forward)) {
+        player_data.sneaking = true;
+    } else if !player_data.creative && (input.just_released(KeyCode::ControlLeft) || mouse_input.just_released(MouseButton::Forward)) && player_data.sneaking && !hitbox.collisions.up {
         transform.translation.y += 1.;
         player_data.speed *= 4.;
+        player_data.sneaking = false;
+    } else if !player_data.creative && player_data.sneaking && !hitbox.collisions.up
+        && !input.pressed(KeyCode::ControlLeft) && !mouse_input.pressed(MouseButton::Forward) {
+        transform.translation.y += 1.;
+        player_data.speed *= 4.;
+        player_data.sneaking = false;
     }
 }
 
@@ -520,7 +611,6 @@ fn spawn_ball(
             Hitbox::new(Vec3::ZERO, 2., 2., 2.)
         ));
     }
-
 }
 
 fn shoot_ball(
@@ -555,17 +645,11 @@ fn shoot_ball(
     }
 }
 
-const MAX_VELOCITY: f32 = 125.;
-// La vraie règle est que MAX_VELOCITY * delta_secs doit être inférieur à la taille minimale de tes objets. 
-// À 60fps, delta_secs ≈ 0.016s, donc avec des hitbox de taille 2, il faut MAX_VELOCITY < 2 / 0.016 = 125.
 fn apply_velocity(
     mut objects: Query<(&mut Transform, &mut Velocity), Without<Player>>,
     time: Res<Time>
 ) {
-    for (mut transform, mut velocity) in &mut objects {
-        // velocity.x = velocity.x.clamp(-MAX_VELOCITY, MAX_VELOCITY);
-        // velocity.y = velocity.y.clamp(-MAX_VELOCITY, MAX_VELOCITY);
-        // velocity.z = velocity.z.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+    for (mut transform, velocity) in &mut objects {
         transform.translation += velocity.0 * time.delta_secs();
     }
 }
@@ -647,30 +731,24 @@ fn is_collised(
             let b_min = center2 - object_hit.size / 2.;
             let b_max = center2 + object_hit.size / 2.;
 
-            // Chevauchement sur chaque axe
             let overlap_x = a_max.x.min(b_max.x) - a_min.x.max(b_min.x);
             let overlap_y = a_max.y.min(b_max.y) - a_min.y.max(b_min.y);
             let overlap_z = a_max.z.min(b_max.z) - a_min.z.max(b_min.z);
 
-            // Collision seulement si les 3 axes se chevauchent
             if overlap_x > 0. && overlap_y > 0. && overlap_z > 0. {
-                // L'axe avec le plus petit overlap = direction de collision
                 if overlap_y <= overlap_x && overlap_y <= overlap_z {
-                    // Collision verticale
                     if center1.y > center2.y {
-                        collides.down = true; // sol
+                        collides.down = true;
                     } else {
-                        collides.up = true;   // plafond
+                        collides.up = true;
                     }
                 } else if overlap_x <= overlap_y && overlap_x <= overlap_z {
-                    // Collision horizontale X
                     if center1.x > center2.x {
                         collides.west = true;
                     } else {
                         collides.east = true;
                     }
                 } else {
-                    // Collision horizontale Z
                     if center1.z > center2.z {
                         collides.south = true;
                     } else {
