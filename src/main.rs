@@ -1,5 +1,3 @@
-use std::f32::consts::PI;
-
 use bevy::{input::{common_conditions::input_just_pressed, mouse::AccumulatedMouseMotion}, prelude::*, window::{CursorOptions, PrimaryWindow, WindowFocused}};
 use rand::{SeedableRng, seq::IndexedRandom};
 
@@ -45,10 +43,7 @@ fn main() {
             update_power_bar,
             update_player_coords,
             update_menu_visibility,
-            update_hud_visibility,
-            update_player_model.after(player_move),
-            switch_fov
-        ));
+            update_hud_visibility));
     app.add_observer(apply_grab);
     app.add_message::<BallSpawn>();
     app.init_resource::<BallData>();
@@ -59,23 +54,17 @@ fn main() {
     app.run();
 }
 
-enum CameraPov {
-    FirstPerson,
-    ThirdPerson
-}
-
 #[derive(Component)]
 struct Player {
     speed: f32,
     creative: bool,
     velocity: Vec3,
-    sneaking: bool,
-    camera_pov: CameraPov
+    sneaking: bool
 }
 
 impl Default for Player {
     fn default() -> Self {
-        Player { speed: 50., creative: false, velocity: Vec3::Y * 20., sneaking: false, camera_pov: CameraPov::FirstPerson}
+        Player { speed: 50., creative: false, velocity: Vec3::Y * 20., sneaking: false }
     }
 }
 
@@ -159,52 +148,14 @@ impl Hitbox {
     }
 }
 
-#[derive(Component)]
-struct PlayerCamera;
-
-#[derive(Component)]
-struct PlayerModel;
-
-fn spawn_camera(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>
-) {
+fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Transform::from_translation(Vec3::new(0., 5., 0.)),
+        Camera3d::default(),
         Player::default(),
         Velocity(Vec3::ZERO),
-        Hitbox::new(Vec3::new(0., -2.5, 0.), 2.5, 5., 2.5),
-    )).with_child((
-        PlayerCamera,
-        Transform::from_translation(Vec3::new(0., 0., 0.)),
-        Camera3d::default()
+        Hitbox::new(Vec3::new(0., -2.5, 0.), 2.5, 5., 2.5)
     ));
-    commands.spawn((
-        SceneRoot(asset_server.load("models/amogus/scene.gltf#Scene0")),
-        Transform::from_translation(Vec3::ZERO)
-        .with_scale(Vec3::splat(0.03))
-        .with_rotation(Quat::from_rotation_y(PI)),
-        PlayerModel
-    ));
-}
-
-fn update_player_model(
-    model: Single<(&mut Transform, &mut Visibility), (With<PlayerModel>, Without<Player>)>,
-    player: Single<(&Transform, &Hitbox, &Player), (With<Player>, Without<PlayerModel>)> 
-) {
-    let (coords, hitbox, player_data) = player.into_inner();
-    let (mut model_coords, mut visibility) = model.into_inner();
-    model_coords.translation = coords.translation + hitbox.coords_gap;
-    let (yaw, _, _) = coords.rotation.to_euler(EulerRot::YXZ);
-    model_coords.rotation = Quat::from_rotation_y(yaw + PI);
-    match player_data.camera_pov {
-        CameraPov::FirstPerson => {
-            *visibility = Visibility::Hidden;
-        },
-        CameraPov::ThirdPerson => {
-            *visibility = Visibility::Visible;
-        }
-    }
 }
 
 fn spawn_map(
@@ -510,28 +461,8 @@ fn toggle_grab(
     commands.trigger(GrabEvent(window.focused));
 }
 
-fn switch_fov(
-    mut player: Single<&mut Player, With<Player>>,
-    mut camera: Single<&mut Transform, With<Camera>>,
-    input: Res<ButtonInput<KeyCode>>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
-) {
-    if input.just_pressed(KeyCode::KeyE) || mouse_input.just_pressed(MouseButton::Back) {
-        match player.camera_pov {
-            CameraPov::FirstPerson => {
-                camera.translation += Vec3::new(0., 5., 0.);
-                player.camera_pov = CameraPov::ThirdPerson;
-            },
-            CameraPov::ThirdPerson => {
-                camera.translation -= Vec3::new(0., 5., 0.);
-                player.camera_pov = CameraPov::FirstPerson;
-            }
-        }
-    }
-}
-
 fn player_move(
-    player: Single<(&mut Transform, &mut Player, &mut Velocity, &Hitbox), With<Player>>,
+    player: Single<(&mut Transform, &mut Player, &mut Velocity, &mut Hitbox), With<Player>>,
     input: Res<ButtonInput<KeyCode>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
@@ -566,7 +497,7 @@ fn player_move(
         velocity.y = player_data.velocity.y;
         to_move.y += 1.;
     }
-    if player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) {
+    if player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) && !player_data.sneaking {
         to_move.y -= 1.;
     }
     if input.just_pressed(KeyCode::KeyQ) {
@@ -585,12 +516,7 @@ fn player_move(
         transform.translation.y -= 1.;
         player_data.speed *= 0.25;
         player_data.sneaking = true;
-    } else if !player_data.creative && (input.just_released(KeyCode::ControlLeft) || mouse_input.just_released(MouseButton::Forward)) && player_data.sneaking && !hitbox.collisions.up {
-        transform.translation.y += 1.;
-        player_data.speed *= 4.;
-        player_data.sneaking = false;
-    } else if !player_data.creative && player_data.sneaking && !hitbox.collisions.up
-        && !input.pressed(KeyCode::ControlLeft) && !mouse_input.pressed(MouseButton::Forward) {
+    } else if !player_data.creative && player_data.sneaking && (input.just_released(KeyCode::ControlLeft) || mouse_input.just_released(MouseButton::Forward)) {
         transform.translation.y += 1.;
         player_data.speed *= 4.;
         player_data.sneaking = false;
@@ -611,6 +537,7 @@ fn spawn_ball(
             Hitbox::new(Vec3::ZERO, 2., 2., 2.)
         ));
     }
+
 }
 
 fn shoot_ball(
@@ -737,18 +664,21 @@ fn is_collised(
 
             if overlap_x > 0. && overlap_y > 0. && overlap_z > 0. {
                 if overlap_y <= overlap_x && overlap_y <= overlap_z {
+                    // Vertical collisions
                     if center1.y > center2.y {
-                        collides.down = true;
+                        collides.down = true; // floor
                     } else {
-                        collides.up = true;
+                        collides.up = true;   // roof
                     }
                 } else if overlap_x <= overlap_y && overlap_x <= overlap_z {
+                    //  X horizontal collision
                     if center1.x > center2.x {
                         collides.west = true;
                     } else {
                         collides.east = true;
                     }
                 } else {
+                    // Z horizontale collision
                     if center1.z > center2.z {
                         collides.south = true;
                     } else {
