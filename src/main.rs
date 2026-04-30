@@ -511,7 +511,13 @@ fn player_move(
         if to_move.z > 0. && hitbox.collisions.north { to_move.z = 0.};
         if to_move.z < 0. && hitbox.collisions.south { to_move.z = 0.};
     }
-    transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
+    if player_data.creative {
+        transform.translation += to_move * time.delta_secs() * player_data.speed * speed_multiplier;
+    } else {
+        let futur_move = to_move * player_data.speed * speed_multiplier;
+        velocity.x = futur_move.x;
+        velocity.z = futur_move.z;
+    }
     if !player_data.creative && (input.just_pressed(KeyCode::ControlLeft) || mouse_input.just_pressed(MouseButton::Forward)) && !player_data.sneaking {
         transform.translation.y -= 1.;
         player_data.speed *= 0.25;
@@ -631,9 +637,9 @@ fn apply_player_gravity(
     for (mut velocity, hitbox, player) in &mut players {
         if !player.creative {
             if hitbox.collisions.down {
-                **velocity *= 0.;
+                velocity.y *= 0.;
             } else if hitbox.collisions.up {
-                **velocity *= 0.;
+                velocity.y *= 0.;
                 **velocity += g;
             } else {
                 **velocity += g;
