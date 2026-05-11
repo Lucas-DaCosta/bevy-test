@@ -1,4 +1,4 @@
-use bevy::{input::{common_conditions::input_just_pressed, mouse::AccumulatedMouseMotion}, prelude::*, window::{CursorOptions, PrimaryWindow, WindowFocused}};
+use bevy::{audio::Volume, input::{common_conditions::input_just_pressed, mouse::AccumulatedMouseMotion}, prelude::*, window::{CursorOptions, PrimaryWindow, WindowFocused}};
 use rand::{SeedableRng, seq::IndexedRandom};
 
 fn round_to(value: f32, decimal_places: i32) -> f32 {
@@ -21,9 +21,11 @@ fn main() {
     app.add_plugins(DefaultPlugins);
     app.add_systems(Startup, (
         spawn_camera,
-        spawn_map.after(spawn_camera),
-        spawn_menu.after(spawn_camera),
-        spawn_hud.after(spawn_camera)));
+        load_sfx,
+        spawn_map,
+        spawn_menu,
+        spawn_hud)
+    .chain());
     app.insert_resource(Time::<Fixed>::from_hz(60.));
     app.add_systems(FixedUpdate,(
         is_collised,
@@ -43,7 +45,9 @@ fn main() {
             update_power_bar,
             update_player_coords,
             update_menu_visibility,
-            update_hud_visibility));
+            update_hud_visibility,
+            update_menu_sfx,
+            update_in_game_sfx));
     app.add_observer(apply_grab);
     app.add_message::<BallSpawn>();
     app.init_resource::<BallData>();
@@ -148,6 +152,26 @@ impl Hitbox {
     }
 }
 
+#[derive(Resource)]
+struct SoundEffects {
+    jump: Handle<AudioSource>,
+    shotgun: Handle<AudioSource>,
+    main_theme: Handle<AudioSource>,
+    in_game_theme: Handle<AudioSource>
+}
+
+fn load_sfx(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>
+) {
+    commands.insert_resource(SoundEffects {
+        jump: asset_server.load("audios/mario-jump.mp3"),
+        shotgun: asset_server.load("audios/spas12.mp3"),
+        main_theme: asset_server.load("audios/dexter-meme.ogg"),
+        in_game_theme: asset_server.load("audios/portal-radio.mp3")
+    });
+}
+
 fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Transform::from_translation(Vec3::new(0., 5., 0.)),
@@ -234,8 +258,15 @@ struct PlayerHud;
 #[derive(Component)]
 struct CoordsHud;
 
+#[derive(Component)]
+struct MenuSfx;
+
+#[derive(Component)]
+struct InGameSfx;
+
 fn spawn_menu(
     mut commands: Commands,
+    sounds: Res<SoundEffects>
 ) {
     commands.spawn((
         MenuUi,
@@ -283,11 +314,17 @@ fn spawn_menu(
             TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
         ));
     });
+    commands.spawn((
+        MenuSfx,
+        AudioPlayer::new(sounds.main_theme.clone()),
+        PlaybackSettings::LOOP.with_volume(Volume::Linear(0.2))
+    ));
 }
 
 fn spawn_hud(
     mut commands: Commands,
     player: Single<&mut Transform, With<Player>>,
+    sounds: Res<SoundEffects>
 ) {
     let pos = player.translation;
     commands.spawn((
@@ -359,6 +396,11 @@ fn spawn_hud(
             BackgroundColor(Color::linear_rgba(1., 1., 1., 1.))
         ));
     });
+    commands.spawn((
+        InGameSfx,
+        AudioPlayer::new(sounds.in_game_theme.clone()),
+        PlaybackSettings::LOOP.with_volume(Volume::Linear(0.2))
+    ));
 }
 
 fn update_menu_visibility(
@@ -370,6 +412,34 @@ fn update_menu_visibility(
             *vis = Visibility::Visible;
         } else {
             *vis = Visibility::Hidden;
+        }
+    }
+}
+
+fn update_menu_sfx(
+    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
+    audios: Query<(Entity, &AudioSink), With<MenuSfx>>,
+    mut commands: Commands,
+) {
+    for (entity, audio) in &audios {
+        if !cursor.visible {
+            audio.pause();
+        } else {
+            // Retire le AudioSink → Bevy le recrée et relance depuis le début
+            commands.entity(entity).remove::<AudioSink>();
+        }
+    }
+}
+
+fn update_in_game_sfx(
+    cursor: Single<&CursorOptions, (With<PrimaryWindow>, Changed<CursorOptions>)>,
+    audios: Query<&AudioSink, With<InGameSfx>>
+) {
+    for audio in audios {
+        if cursor.visible {
+            audio.pause();
+        } else {
+            audio.play();
         }
     }
 }
@@ -466,7 +536,9 @@ fn player_move(
     input: Res<ButtonInput<KeyCode>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
-    cursor: Single<&CursorOptions, With<PrimaryWindow>>
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    mut commands: Commands,
+    sounds: Res<SoundEffects>
 ) {
     if cursor.visible {
         return;
@@ -496,6 +568,10 @@ fn player_move(
     } else if input.pressed(KeyCode::Space) && hitbox.collisions.down {
         velocity.y = player_data.velocity.y;
         to_move.y += 1.;
+        commands.spawn((
+            AudioPlayer::new(sounds.jump.clone()),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.1))
+        ));
     }
     if player_data.creative && (input.pressed(KeyCode::ControlLeft) || mouse_input.pressed(MouseButton::Forward)) && !player_data.sneaking {
         to_move.y -= 1.;
@@ -532,7 +608,8 @@ fn player_move(
 fn spawn_ball(
     mut events: MessageReader<BallSpawn>,
     mut commands: Commands,
-    ball_data: Res<BallData>
+    ball_data: Res<BallData>,
+    sounds: Res<SoundEffects>
 ) {
     for spawn in events.read() {
         commands.spawn((
@@ -541,6 +618,10 @@ fn spawn_ball(
             MeshMaterial3d(ball_data.material()),
             Velocity(spawn.velocity * spawn.power * 5.),
             Hitbox::new(Vec3::ZERO, 2., 2., 2.)
+        ));
+        commands.spawn((
+            AudioPlayer::new(sounds.shotgun.clone()),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.05))
         ));
     }
 
