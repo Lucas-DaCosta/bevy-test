@@ -315,6 +315,32 @@ fn spawn_menu(
         ));
     });
     commands.spawn((
+        MenuUi,
+        Node {
+        position_type: PositionType::Absolute,
+        width: Val::Vw(15.),
+        height: Val::Vh(5.),
+        bottom: Val::Vh(47.5),
+        left: Val::Vw(42.5),
+        flex_direction: FlexDirection::Column,
+        border_radius: BorderRadius::all(Val::VMax(1.)),
+        ..Default::default()
+        },
+        BackgroundColor(Color::linear_rgba(0., 0., 0., 0.67)),
+    )).with_child((
+        Text::new("PAUSE"),
+        Node {
+            margin: UiRect::all(Val::Auto),
+            ..Default::default()
+        },
+        TextFont {
+            font_size: 30.,
+            ..Default::default()
+        },
+        TextColor(Color::linear_rgba(0.75, 0.75, 0.75, 1.))
+        )
+    );
+    commands.spawn((
         MenuSfx,
         AudioPlayer::new(sounds.main_theme.clone()),
         PlaybackSettings::LOOP.with_volume(Volume::Linear(0.2))
@@ -569,6 +595,7 @@ fn player_move(
         velocity.y = player_data.velocity.y;
         to_move.y += 1.;
         commands.spawn((
+            InGameSfx,
             AudioPlayer::new(sounds.jump.clone()),
             PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.1))
         ));
@@ -620,6 +647,7 @@ fn spawn_ball(
             Hitbox::new(Vec3::ZERO, 2., 2., 2.)
         ));
         commands.spawn((
+            InGameSfx,
             AudioPlayer::new(sounds.shotgun.clone()),
             PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.05))
         ));
@@ -661,8 +689,10 @@ fn shoot_ball(
 
 fn apply_velocity(
     mut objects: Query<(&mut Transform, &mut Velocity), Without<Player>>,
-    time: Res<Time>
+    time: Res<Time>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
 ) {
+    if cursor.visible { return; }
     for (mut transform, velocity) in &mut objects {
         transform.translation += velocity.0 * time.delta_secs();
     }
@@ -671,8 +701,10 @@ fn apply_velocity(
 const GRAVITY: Vec3 = Vec3::new(0., -9.8, 0.);
 fn apply_gravity(
     mut objects: Query<(&mut Velocity, &Hitbox), Without<Player>>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     time: Res<Time>
 ) {
+    if cursor.visible { return; }
     let g = GRAVITY * time.delta_secs() * 50.;
     for (mut v, hitbox) in &mut objects {
         if !hitbox.collisions.down {
@@ -701,8 +733,10 @@ fn bounce(
 
 fn apply_player_velocity(
     mut players: Query<(&mut Transform, &Velocity, &Player)>,
-    time: Res<Time>
+    time: Res<Time>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
 ) {
+    if cursor.visible { return; }
     for (mut transform, velocity, player_data) in &mut players {
         if !player_data.creative {
             transform.translation += velocity.0 * time.delta_secs();
@@ -712,8 +746,10 @@ fn apply_player_velocity(
 
 fn apply_player_gravity(
     mut players: Query<(&mut Velocity, &Hitbox, &Player)>,
-    time: Res<Time>
+    time: Res<Time>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
 ) {
+    if cursor.visible { return; }
     let g = GRAVITY * time.delta_secs() * 10.;
     for (mut velocity, hitbox, player) in &mut players {
         if !player.creative {
