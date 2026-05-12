@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.18.1", features = ["dynamic_linking", "jpeg", "mp3"]}
+bevy = { version = "0.18.1", features = ["jpeg", "mp3"]}
 rand = "*"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[features]
+dev = ["bevy/dynamic_linking"]
